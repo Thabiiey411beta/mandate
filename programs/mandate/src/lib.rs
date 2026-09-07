@@ -18,9 +18,12 @@ pub mod mandate {
         v.authority = ctx.accounts.authority.key();
         v.executor = args.executor;
         v.usdy_mint = ctx.accounts.usdy_mint.key();
+        v.ondo_mint = ctx.accounts.ondo_mint.key();
         v.share_mint = ctx.accounts.share_mint.key();
         v.idle_treasury = ctx.accounts.idle_treasury.key();
+        v.ondo_treasury = ctx.accounts.ondo_treasury.key();
         v.nav_usd_per_usdy_e6 = args.nav_usd_per_usdy_e6;
+        v.ondo_usd_e6 = args.ondo_usd_e6;
         v.idle_mode = IdleMode::HoldUsdy;
         v.management_fee_bps = args.management_fee_bps;
         v.max_name_weight_bps = args.max_name_weight_bps;
@@ -36,10 +39,15 @@ pub mod mandate {
         Ok(())
     }
 
-    pub fn open_epoch(ctx: Context<OpenEpoch>, universe: Vec<Pubkey>) -> Result<()> {
+    pub fn open_epoch(
+        ctx: Context<OpenEpoch>,
+        universe: Vec<Pubkey>,
+        labels: Vec<String>,
+    ) -> Result<()> {
         require!(!ctx.accounts.vault.paused, MandateError::Paused);
         require!(universe.len() <= MAX_BALLOT, MandateError::BallotTooLarge);
-        require!(universe.len() > 0, MandateError::EmptyUniverse);
+        require!(!universe.is_empty(), MandateError::EmptyUniverse);
+        require!(universe.len() == labels.len(), MandateError::WeightMismatch);
 
         let now = Clock::get()?.unix_timestamp;
         let v = &mut ctx.accounts.vault;
@@ -50,11 +58,10 @@ pub mod mandate {
         e.index = v.current_epoch;
         e.phase_start = now;
         e.commit_end = now.saturating_add(v.commit_length_secs);
-        e.vote_end = now
-            .saturating_add(v.commit_length_secs)
-            .saturating_add(v.vote_length_secs);
+        e.vote_end = now.saturating_add(v.commit_length_secs).saturating_add(v.vote_length_secs);
         e.epoch_end = now.saturating_add(v.epoch_length_secs);
         e.universe = universe;
+        e.labels = labels;
         e.weights = vec![0u64; e.universe.len()];
         e.voted_power = 0;
         e.total_power = 0;
@@ -90,30 +97,20 @@ pub mod mandate {
 
         let vault = &mut ctx.accounts.vault;
         let pos = &mut ctx.accounts.position;
-
-        let nav = vault.nav_usd_per_usdy_e6.max(1);
-        let value_e6 = amount.saturating_mul(nav);
-        // share price = total_assets / total_shares; seed 1:1 on first deposit
-        let shares = if vault.total_shares == 0 {
-            amount
-        } else {
-            // conservative: shares ~ amount (NAV accrual handled in exchange rate later)
-            amount
-        };
+        let shares = amount;
 
         pos.owner = ctx.accounts.user.key();
         pos.vault = vault.key();
         pos.shares = pos.shares.saturating_add(shares);
-        pos.vote_power = pos.vote_power.saturating_add(
-            amount.saturating_mul(lock_mult_bps as u64) / 100,
-        );
+        pos.vote_power = pos
+            .vote_power
+            .saturating_add(amount.saturating_mul(lock_mult_bps as u64) / 100);
         pos.lock_mult_bps = lock_mult_bps;
         pos.epoch_index = epoch.index;
         pos.voted = false;
 
         vault.total_shares = vault.total_shares.saturating_add(shares);
         epoch.total_power = epoch.total_power.saturating_add(pos.vote_power);
-        let _ = value_e6;
         Ok(())
     }
 
@@ -126,15 +123,13 @@ pub mod mandate {
         let pos = &mut ctx.accounts.position;
         require!(!pos.voted, MandateError::AlreadyVoted);
         require!(pos.epoch_index == epoch.index, MandateError::WrongEpoch);
+        require!(pos.owner == ctx.accounts.user.key(), MandateError::BadOwner);
 
         let sum: u64 = weights.iter().sum();
         require!(sum > 0, MandateError::ZeroAmount);
 
-        // scale weights to this user's vote power
         for (i, w) in weights.iter().enumerate() {
-            let part = (*w as u128)
-                .saturating_mul(pos.vote_power as u128)
-                / (sum as u128);
+            let part = (*w as u128).saturating_mul(pos.vote_power as u128) / (sum as u128);
             epoch.weights[i] = epoch.weights[i].saturating_add(part as u64);
         }
         epoch.voted_power = epoch.voted_power.saturating_add(pos.vote_power);
@@ -165,8 +160,6 @@ pub mod mandate {
         Ok(())
     }
 
-    /// Executor reports an Ondo fill. v0 trusts the executor role;
-    /// production must verify mint receipt / adapter CPI.
     pub fn execute_epoch(
         ctx: Context<ExecuteEpoch>,
         _fill_hash: [u8; 32],
@@ -183,13 +176,95 @@ pub mod mandate {
         Ok(())
     }
 
+    pub fn init_rebate(ctx: Context<InitRebate>) -> Result<()> {
+        let r = &mut ctx.accounts.rebate;
+        r.owner = ctx.accounts.user.key();
+        r.vault = ctx.accounts.vault.key();
+        r.staked_ondo = 0;
+        r.pending_unstake = 0;
+        r.unstake_available_ts = 0;
+        r.accrued_rebate_usdy = 0;
+        r.last_fee_epoch = 0;
+        r.bump = ctx.bumps.rebate;
+        Ok(())
+    }
+
+    pub fn stake_ondo(ctx: Context<StakeOndo>, amount: u64) -> Result<()> {
+        require!(amount > 0, MandateError::ZeroAmount);
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.user_ondo.to_account_info(),
+                    to: ctx.accounts.ondo_treasury.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+        ctx.accounts.rebate.staked_ondo = ctx.accounts.rebate.staked_ondo.saturating_add(amount);
+        Ok(())
+    }
+
+    pub fn request_unstake(ctx: Context<RebateAuth>, amount: u64) -> Result<()> {
+        let r = &mut ctx.accounts.rebate;
+        require!(amount > 0 && amount <= r.staked_ondo, MandateError::BadUnstake);
+        r.staked_ondo = r.staked_ondo.saturating_sub(amount);
+        r.pending_unstake = r.pending_unstake.saturating_add(amount);
+        r.unstake_available_ts = Clock::get()?.unix_timestamp.saturating_add(UNSTAKE_COOLDOWN_SECS);
+        Ok(())
+    }
+
+    pub fn complete_unstake(ctx: Context<CompleteUnstake>) -> Result<()> {
+        let r = &mut ctx.accounts.rebate;
+        require!(r.pending_unstake > 0, MandateError::BadUnstake);
+        require!(
+            Clock::get()?.unix_timestamp >= r.unstake_available_ts,
+            MandateError::Cooldown
+        );
+        let amount = r.pending_unstake;
+        r.pending_unstake = 0;
+
+        let vault = &ctx.accounts.vault;
+        let seeds = &[b"vault", vault.authority.as_ref(), &[vault.bump]];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.ondo_treasury.to_account_info(),
+                    to: ctx.accounts.user_ondo.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+        )?;
+        Ok(())
+    }
+
+    /// Crystallize fee rebate after an epoch: credit USDY from fee pocket.
+    pub fn harvest_rebate(ctx: Context<HarvestRebate>, gross_fee_usdy: u64) -> Result<()> {
+        let vault = &ctx.accounts.vault;
+        let pos = &ctx.accounts.position;
+        let r = &mut ctx.accounts.rebate;
+        require!(pos.owner == r.owner, MandateError::BadOwner);
+
+        let user_nav = pos.shares.saturating_mul(vault.nav_usd_per_usdy_e6);
+        let bps = RebateAccount::rebate_bps(r.staked_ondo, vault.ondo_usd_e6, user_nav);
+        let credit = gross_fee_usdy.saturating_mul(bps as u64) / 10_000;
+        r.accrued_rebate_usdy = r.accrued_rebate_usdy.saturating_add(credit);
+        r.last_fee_epoch = ctx.accounts.epoch.index;
+        Ok(())
+    }
+
     pub fn set_paused(ctx: Context<Auth>, paused: bool) -> Result<()> {
         ctx.accounts.vault.paused = paused;
         Ok(())
     }
 
-    pub fn update_nav(ctx: Context<Auth>, nav_e6: u64) -> Result<()> {
+    pub fn update_nav(ctx: Context<Auth>, nav_e6: u64, ondo_usd_e6: u64) -> Result<()> {
         ctx.accounts.vault.nav_usd_per_usdy_e6 = nav_e6.max(1);
+        ctx.accounts.vault.ondo_usd_e6 = ondo_usd_e6.max(1);
         Ok(())
     }
 }
@@ -198,6 +273,7 @@ pub mod mandate {
 pub struct InitializeVaultArgs {
     pub executor: Pubkey,
     pub nav_usd_per_usdy_e6: u64,
+    pub ondo_usd_e6: u64,
     pub management_fee_bps: u16,
     pub max_name_weight_bps: u16,
     pub quorum_bps: u16,
@@ -220,8 +296,10 @@ pub struct InitializeVault<'info> {
     )]
     pub vault: Account<'info, Vault>,
     pub usdy_mint: Account<'info, Mint>,
+    pub ondo_mint: Account<'info, Mint>,
     pub share_mint: Account<'info, Mint>,
     pub idle_treasury: Account<'info, TokenAccount>,
+    pub ondo_treasury: Account<'info, TokenAccount>,
     pub system_program: Program<'info, System>,
 }
 
@@ -254,7 +332,7 @@ pub struct Deposit<'info> {
         init_if_needed,
         payer = user,
         space = 8 + Position::SIZE,
-        seeds = [b"pos", vault.key().as_ref(), epoch.index.to_le_bytes().as_ref(), user.key().as_ref()],
+        seeds = [b"pos", vault.key().as_ref(), &epoch.index.to_le_bytes(), user.key().as_ref()],
         bump
     )]
     pub position: Account<'info, Position>,
@@ -271,10 +349,8 @@ pub struct CastVote<'info> {
     pub user: Signer<'info>,
     #[account(mut)]
     pub epoch: Account<'info, Epoch>,
-    #[account(mut, has_one = owner)]
+    #[account(mut, seeds = [b"pos", epoch.vault.as_ref(), &epoch.index.to_le_bytes(), user.key().as_ref()], bump)]
     pub position: Account<'info, Position>,
-    /// CHECK: owner of position
-    pub owner: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -294,6 +370,67 @@ pub struct ExecuteEpoch<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitRebate<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub vault: Account<'info, Vault>,
+    #[account(
+        init,
+        payer = user,
+        space = 8 + RebateAccount::SIZE,
+        seeds = [b"rebate", vault.key().as_ref(), user.key().as_ref()],
+        bump
+    )]
+    pub rebate: Account<'info, RebateAccount>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct StakeOndo<'info> {
+    pub user: Signer<'info>,
+    pub vault: Account<'info, Vault>,
+    #[account(mut, seeds = [b"rebate", vault.key().as_ref(), user.key().as_ref()], bump = rebate.bump, has_one = owner)]
+    pub rebate: Account<'info, RebateAccount>,
+    /// CHECK: rebate owner
+    #[account(address = rebate.owner)]
+    pub owner: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub user_ondo: Account<'info, TokenAccount>,
+    #[account(mut, address = vault.ondo_treasury)]
+    pub ondo_treasury: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct RebateAuth<'info> {
+    pub user: Signer<'info>,
+    #[account(mut, seeds = [b"rebate", rebate.vault.as_ref(), user.key().as_ref()], bump = rebate.bump)]
+    pub rebate: Account<'info, RebateAccount>,
+}
+
+#[derive(Accounts)]
+pub struct CompleteUnstake<'info> {
+    pub user: Signer<'info>,
+    pub vault: Account<'info, Vault>,
+    #[account(mut, seeds = [b"rebate", vault.key().as_ref(), user.key().as_ref()], bump = rebate.bump)]
+    pub rebate: Account<'info, RebateAccount>,
+    #[account(mut, address = vault.ondo_treasury)]
+    pub ondo_treasury: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub user_ondo: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct HarvestRebate<'info> {
+    pub vault: Account<'info, Vault>,
+    pub epoch: Account<'info, Epoch>,
+    pub position: Account<'info, Position>,
+    #[account(mut)]
+    pub rebate: Account<'info, RebateAccount>,
+}
+
+#[derive(Accounts)]
 pub struct Auth<'info> {
     pub authority: Signer<'info>,
     #[account(mut, has_one = authority)]
@@ -302,38 +439,24 @@ pub struct Auth<'info> {
 
 #[error_code]
 pub enum MandateError {
-    #[msg("vault paused")]
-    Paused,
-    #[msg("ballot too large")]
-    BallotTooLarge,
-    #[msg("empty universe")]
-    EmptyUniverse,
-    #[msg("zero amount")]
-    ZeroAmount,
-    #[msg("bad lock multiplier")]
-    BadLock,
-    #[msg("not commit phase")]
-    NotCommitPhase,
-    #[msg("not vote phase")]
-    NotVotePhase,
-    #[msg("weight mismatch")]
-    WeightMismatch,
-    #[msg("already voted")]
-    AlreadyVoted,
-    #[msg("wrong epoch")]
-    WrongEpoch,
-    #[msg("vote still open")]
-    VoteOpen,
-    #[msg("already executed")]
-    AlreadyExecuted,
-    #[msg("quorum missed")]
-    NoQuorum,
-    #[msg("bad executor")]
-    BadExecutor,
-    #[msg("not tallied")]
-    NotTallied,
-    #[msg("idle mode blocked")]
-    IdleModeBlocked,
-    #[msg("overflow")]
-    Overflow,
+    #[msg("vault paused")] Paused,
+    #[msg("ballot too large")] BallotTooLarge,
+    #[msg("empty universe")] EmptyUniverse,
+    #[msg("zero amount")] ZeroAmount,
+    #[msg("bad lock multiplier")] BadLock,
+    #[msg("not commit phase")] NotCommitPhase,
+    #[msg("not vote phase")] NotVotePhase,
+    #[msg("weight mismatch")] WeightMismatch,
+    #[msg("already voted")] AlreadyVoted,
+    #[msg("wrong epoch")] WrongEpoch,
+    #[msg("vote still open")] VoteOpen,
+    #[msg("already executed")] AlreadyExecuted,
+    #[msg("quorum missed")] NoQuorum,
+    #[msg("bad executor")] BadExecutor,
+    #[msg("not tallied")] NotTallied,
+    #[msg("idle mode blocked")] IdleModeBlocked,
+    #[msg("overflow")] Overflow,
+    #[msg("bad owner")] BadOwner,
+    #[msg("bad unstake")] BadUnstake,
+    #[msg("unstake cooldown")] Cooldown,
 }
