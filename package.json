@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "workspaces": ["apps/web", "cli"],
+  "workspaces": ["apps/web", "apps/keeper", "cli"],
   "scripts": {
     "test": "anchor test",
     "cli": "npm run start --workspace=cli",
-    "web": "npm run dev --workspace=web"
+    "web": "npm run dev --workspace=web",
+    "keeper": "npm run start --workspace=keeper",
+    "devnet:config": "node scripts/devnet-bootstrap.mjs"
   }
 }
