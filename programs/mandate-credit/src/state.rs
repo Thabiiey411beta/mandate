@@ -1,16 +1,14 @@
 use anchor_lang::prelude::*;
 
-/// SPYon genesis params (also usable for other isolated names).
 pub const SPY_LTV_BPS: u16 = 6_000;
 pub const SPY_LIQ_BPS: u16 = 7_000;
 pub const LIQ_PENALTY_BPS: u16 = 400;
-pub const USDY_NAV_APY_BPS: u16 = 355; // ~3.55%
+pub const USDY_NAV_APY_BPS: u16 = 355;
 pub const BORROW_FLOOR_SPREAD_BPS: u16 = 75;
 pub const KINK_UTIL_BPS: u16 = 5_000;
 pub const KINK_SLOPE_BPS: u16 = 300;
 pub const JUMP_SLOPE_BPS: u16 = 1_200;
 
-/// 50 / 25 / 25 of net interest.
 pub const OPCO_BPS: u16 = 5_000;
 pub const INSURANCE_BPS: u16 = 2_500;
 pub const PROTOCOL_BPS: u16 = 2_500;
@@ -27,6 +25,7 @@ pub struct Market {
     pub opco_treasury: Pubkey,
     pub insurance_treasury: Pubkey,
     pub protocol_treasury: Pubkey,
+    pub oracle: Pubkey,
     pub ltv_bps: u16,
     pub liq_threshold_bps: u16,
     pub liq_penalty_bps: u16,
@@ -40,6 +39,9 @@ pub struct Market {
     pub total_supply_shares: u64,
     pub total_debt_assets: u64,
     pub total_supply_assets: u64,
+    pub pending_opco: u64,
+    pub pending_insurance: u64,
+    pub pending_protocol: u64,
     pub last_accrual_ts: i64,
     pub paused: bool,
     pub ticker: [u8; 12],
@@ -47,12 +49,7 @@ pub struct Market {
 }
 
 impl Market {
-    pub const SIZE: usize = 32 * 8 + 2 * 3 + 8 * 3 + 8 + 16 * 2 + 8 * 4 + 8 + 1 + 12 + 1 + 64;
-
-    pub fn ticker_str(&self) -> String {
-        let end = self.ticker.iter().position(|&b| b == 0).unwrap_or(12);
-        String::from_utf8_lossy(&self.ticker[..end]).into_owned()
-    }
+    pub const SIZE: usize = 32 * 9 + 2 * 3 + 8 * 6 + 16 * 2 + 8 * 7 + 1 + 12 + 1 + 64;
 
     pub fn utilization_bps(&self) -> u16 {
         if self.total_supply_assets == 0 {
