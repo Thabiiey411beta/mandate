@@ -1,0 +1,17 @@
+{
+  "name": "mandate",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "anchor test"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "ts-mocha": "^10.0.0",
+    "typescript": "^5.6.0"
+  }
+}
