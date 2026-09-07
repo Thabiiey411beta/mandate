@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/mandate"]
+members = ["programs/mandate", "programs/mandate-credit"]
 resolver = "2"
 
 [profile.release]

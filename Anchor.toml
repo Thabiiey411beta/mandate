@@ -7,9 +7,11 @@ skip-lint = false
 
 [programs.devnet]
 mandate = "MandatE11111111111111111111111111111111111"
+mandate_credit = "Cred1T111111111111111111111111111111111111"
 
 [programs.localnet]
 mandate = "MandatE11111111111111111111111111111111111"
+mandate_credit = "Cred1T111111111111111111111111111111111111"
 
 [provider]
 cluster = "devnet"
