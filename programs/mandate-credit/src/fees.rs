@@ -1,7 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use crate::state::*;
-use crate::CreditError;
 
 pub fn apply_interest(m: &mut Market, interest: u64) {
     let take = interest / 4;
