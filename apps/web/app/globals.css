@@ -1,0 +1,24 @@
+:root {
+  --bg: #07090d;
+  --card: #10141c;
+  --line: #1d2430;
+  --text: #e8edf5;
+  --muted: #8b95a7;
+  --accent: #c8f542;
+  --warn: #f5c542;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, sans-serif; }
+a { color: var(--accent); }
+button {
+  background: var(--accent); color: #111; border: 0; border-radius: 8px;
+  padding: 10px 14px; font-weight: 700; cursor: pointer;
+}
+button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+input[type="range"] { width: 100%; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 80px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin: 16px 0; }
+.row { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.muted { color: var(--muted); font-size: 14px; }
+.ticker { font-variant-numeric: tabular-nums; }
+h1 { font-size: 28px; margin: 0 0 8px; }

@@ -1,55 +1,44 @@
 # Mandate
 
-Solana-first collective allocation protocol on [Ondo](https://ondo.finance) tokenized stocks.
+Solana-first collective allocation protocol on Ondo tokenized stocks.
 
-Users commit capital, vote which `XXXon` stock the vault should buy, and receive a pro-rata vault share. Unallocated cash sits in **USDY** and accrues Treasury yield until execution. `$ONDO` is used for proposer bonds and fee rebates — not for stock-pick weight.
+Repo: https://github.com/Thabiiey411beta/mandate
 
-**Repo:** https://github.com/Thabiiey411beta/mandate
-
-## Why Solana first
-
-- Epoch voting is many small txs (commit, vote, tally). Fees must stay negligible.
-- Ondo Stocks + USDY already live on Solana.
-- Kamino is the deepest venue if we ever graduate idle cash *beyond* native USDY accrual — v0 does **not** do that.
-
-## Product loop
+## Layout
 
 ```
-USDC / USDon  →  vault (idle USDY)  →  capital-weighted vote  →  Ondo mint XXXon  →  oFUND shares
+programs/mandate   Anchor program (vault, epoch, rebate)
+cli                thin CLI — open-epoch, pdas
+apps/web           Next.js devnet vote UI
+docs               epoch / idle USDY / ONDO rebate
 ```
 
-See [docs/EPOCH_SPEC.md](docs/EPOCH_SPEC.md) and [docs/IDLE_YIELD.md](docs/IDLE_YIELD.md).
+## ONDO rebate
 
-## Safety stance (idle cash)
+See [docs/ONDO_REBATE.md](docs/ONDO_REBATE.md). Stake ONDO on a per-user `RebateAccount`. Fees rebate up to 100%. Unstake cooldown is 7 days.
 
-| Tier | Strategy | v0 |
-|---|---|---|
-| 0 | Hold USDY, earn embedded T-bill NAV (~3.5% APY) | **default, shipped** |
-| 1 | USDY as isolated collateral on a blue-chip Solana lender, borrow none | gated, opt-in later |
-| 2 | LP USDY/USDC | **out of scope** |
-| 3 | Looping, farms, points, Pendle PTs | **forbidden in core vault** |
-
-Native USDY already *is* the sound-money sleeve. Adding DeFi yield on top of T-bills is optional alpha, not the product.
-
-## Programs
-
-| Program | Role |
-|---|---|
-| `mandate` | Vault, epochs, votes, shares |
-| (adapter) | Ondo mint/redeem — executor-gated in v0 |
-
-## Quick start
+## CLI
 
 ```bash
-# requires Solana CLI + Anchor 0.31+
-anchor build
-anchor test
+npm install
+export SOLANA_RPC=https://api.devnet.solana.com
+npx tsx cli/src/index.ts pdas --authority <YOUR_PUBKEY>
+NEXT_EPOCH=1 npx tsx cli/src/index.ts open-epoch --tickers NVDAon,TSLAon,AAPLon,MSFTon,GOOGLon,METAon,AMZNon
 ```
 
-Devnet mints in `Anchor.toml` are placeholders. USDY mainnet mint:
+`open-epoch` needs a deployed program + `initialize_vault`. Until then it prints the missing vault PDA.
 
-`A1KLoBrKBde8Ty9qtNQUtq3C2ortoC3u7twggz7sEto6`
+## Vote UI
+
+```bash
+cd apps/web
+cp .env.example .env.local   # set NEXT_PUBLIC_VAULT
+npm install
+npm run dev
+```
+
+Connect Phantom on **devnet**, paste the epoch PDA from the CLI, allocate sliders, cast vote.
 
 ## Status
 
-Scaffold. Not audited. Not a registered fund. Non-US perimeter. Do not deposit mainnet funds.
+Scaffold. Placeholder program id. Not audited. Do not deposit mainnet funds.
