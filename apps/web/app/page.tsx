@@ -4,43 +4,28 @@ import { useMemo, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
-import { createHash } from "crypto";
+import { anchorDisc, encodeU64Vec } from "../lib/anchor";
 
 const PROGRAM_ID = new PublicKey(
   process.env.NEXT_PUBLIC_MANDATE_PROGRAM_ID ?? "MandatE11111111111111111111111111111111111"
 );
 
 const DEMO_BALLOT = [
-  { label: "NVDAon", mint: "11111111111111111111111111111112" },
-  { label: "TSLAon", mint: "11111111111111111111111111111113" },
-  { label: "AAPLon", mint: "11111111111111111111111111111114" },
-  { label: "MSFTon", mint: "11111111111111111111111111111115" },
-  { label: "GOOGLon", mint: "11111111111111111111111111111116" },
-  { label: "METAon", mint: "11111111111111111111111111111117" },
-  { label: "AMZNon", mint: "11111111111111111111111111111118" },
+  { label: "NVDAon" },
+  { label: "TSLAon" },
+  { label: "AAPLon" },
+  { label: "MSFTon" },
+  { label: "GOOGLon" },
+  { label: "METAon" },
+  { label: "AMZNon" },
 ];
-
-function disc(name: string) {
-  return createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
-}
-
-function encodeU64Vec(xs: number[]) {
-  const parts: Buffer[] = [Buffer.alloc(4)];
-  parts[0].writeUInt32LE(xs.length);
-  for (const x of xs) {
-    const b = Buffer.alloc(8);
-    b.writeBigUInt64LE(BigInt(x));
-    parts.push(b);
-  }
-  return Buffer.concat(parts);
-}
 
 export default function Page() {
   const { connection } = useConnection();
   const { publicKey, sendTransaction, connected } = useWallet();
   const [weights, setWeights] = useState(DEMO_BALLOT.map(() => 0));
   const [epochPk, setEpochPk] = useState("");
-  const [status, setStatus] = useState("devnet UI — set epoch PDA after `mandate open-epoch`");
+  const [status, setStatus] = useState("devnet UI — paste epoch PDA from `mandate open-epoch`");
 
   const total = useMemo(() => weights.reduce((a, b) => a + b, 0), [weights]);
 
@@ -54,14 +39,14 @@ export default function Page() {
       setStatus("Put weight on at least one name.");
       return;
     }
-    const epoch = new PublicKey(epochPk);
-    const idx = BigInt(process.env.NEXT_PUBLIC_EPOCH_INDEX ?? "1");
     const vaultEnv = process.env.NEXT_PUBLIC_VAULT;
     if (!vaultEnv) {
-      setStatus("Set NEXT_PUBLIC_VAULT to the vault PDA.");
+      setStatus("Set NEXT_PUBLIC_VAULT in apps/web/.env.local");
       return;
     }
     const vault = new PublicKey(vaultEnv);
+    const epoch = new PublicKey(epochPk);
+    const idx = BigInt(process.env.NEXT_PUBLIC_EPOCH_INDEX ?? "1");
     const buf = Buffer.alloc(8);
     buf.writeBigUInt64LE(idx);
     const [position] = PublicKey.findProgramAddressSync(
@@ -69,7 +54,12 @@ export default function Page() {
       PROGRAM_ID
     );
 
-    const data = Buffer.concat([disc("cast_vote"), encodeU64Vec(weights.map((w) => Math.max(0, Math.floor(w))))]);
+    const disc = await anchorDisc("cast_vote");
+    const weightsEnc = encodeU64Vec(weights);
+    const data = new Uint8Array(disc.length + weightsEnc.length);
+    data.set(disc, 0);
+    data.set(weightsEnc, disc.length);
+
     const ix = new TransactionInstruction({
       programId: PROGRAM_ID,
       keys: [
@@ -77,7 +67,7 @@ export default function Page() {
         { pubkey: epoch, isSigner: false, isWritable: true },
         { pubkey: position, isSigner: false, isWritable: true },
       ],
-      data,
+      data: Buffer.from(data),
     });
     try {
       const sig = await sendTransaction(new Transaction().add(ix), connection);
@@ -92,7 +82,9 @@ export default function Page() {
       <div className="row">
         <div>
           <h1>Mandate</h1>
-          <p className="muted">Devnet vote. Idle cash stays in USDY. ONDO stake rebates fees, it does not pick the stock.</p>
+          <p className="muted">
+            Devnet vote. Idle cash stays in USDY. ONDO stake rebates fees — it does not pick the stock.
+          </p>
         </div>
         <WalletMultiButton />
       </div>
@@ -100,7 +92,15 @@ export default function Page() {
       <div className="card">
         <div className="muted">Epoch PDA</div>
         <input
-          style={{ width: "100%", marginTop: 8, padding: 10, borderRadius: 8, border: "1px solid #1d2430", background: "#0b0e14", color: "#e8edf5" }}
+          style={{
+            width: "100%",
+            marginTop: 8,
+            padding: 10,
+            borderRadius: 8,
+            border: "1px solid #1d2430",
+            background: "#0b0e14",
+            color: "#e8edf5",
+          }}
           placeholder="Epoch public key from CLI"
           value={epochPk}
           onChange={(e) => setEpochPk(e.target.value)}
@@ -112,7 +112,7 @@ export default function Page() {
           <div key={t.label} style={{ marginBottom: 16 }}>
             <div className="row">
               <strong className="ticker">{t.label}</strong>
-              <span className="muted">{weights[i]}%</span>
+              <span className="muted">{weights[i]}</span>
             </div>
             <input
               type="range"
@@ -127,7 +127,7 @@ export default function Page() {
             />
           </div>
         ))}
-        <div className="muted">Weights are normalized on-chain to your vote power. Total slider {total}.</div>
+        <div className="muted">On-chain weights normalize to your vote power. Slider sum {total}.</div>
       </div>
 
       <div className="card">
